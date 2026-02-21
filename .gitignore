@@ -1,0 +1,24 @@
+# Node
+node_modules/
+client/node_modules/
+dist/
+client/dist/
+
+# Python
+venv/
+server/venv/
+__pycache__/
+server/__pycache__/
+*.pyc
+server/*.pyc
+.env
+server/.env
+
+# Local Database
+*.db
+server/career_ai.db
+
+# OS
+.DS_Store
+.vscode/
+.idea/
