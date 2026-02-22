@@ -1,17 +1,35 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import axios from 'axios'
-import { Briefcase, Search, MapPin, Tag, ExternalLink, Sparkles, Building2 } from 'lucide-react'
+import { Briefcase, Search, MapPin, Tag, ExternalLink, Sparkles, Building2, Clock } from 'lucide-react'
 
 const API_URL = 'http://127.0.0.1:8000'
 
 export default function JobMatcher({ onSelectJob }) {
-    const [profile, setProfile] = useState('')
-    const [interests, setInterests] = useState('')
+    const [profile, setProfile] = useState(localStorage.getItem('saved_profile') || '')
+    const [interests, setInterests] = useState(localStorage.getItem('saved_interests') || '')
     const [matches, setMatches] = useState(null)
+    const [history, setHistory] = useState([])
     const [loading, setLoading] = useState(false)
+
+    useEffect(() => {
+        fetchHistory()
+    }, [])
+
+    const fetchHistory = async () => {
+        try {
+            const token = localStorage.getItem('token')
+            if (!token) return
+            const resp = await axios.get(`${API_URL}/search-history`, {
+                headers: { Authorization: `Bearer ${token}` }
+            })
+            setHistory(resp.data.history || [])
+        } catch (err) { console.error(err) }
+    }
 
     const handleMatch = async () => {
         setLoading(true)
+        localStorage.setItem('saved_profile', profile)
+        localStorage.setItem('saved_interests', interests)
         try {
             const token = localStorage.getItem('token')
             const resp = await axios.post(`${API_URL}/match-jobs`, {
@@ -21,6 +39,7 @@ export default function JobMatcher({ onSelectJob }) {
                 headers: { Authorization: `Bearer ${token}` }
             })
             setMatches(resp.data.matches)
+            fetchHistory()
         } catch (err) {
             console.error(err)
         } finally {
@@ -36,25 +55,64 @@ export default function JobMatcher({ onSelectJob }) {
             </div>
 
             <div className="grid-2-1">
-                <div className="glass" style={{ padding: '2rem' }}>
-                    <label>Your Profile / Skills</label>
-                    <textarea
-                        placeholder="e.g. Python, React, SQL, project management..."
-                        rows="5"
-                        value={profile}
-                        onChange={(e) => setProfile(e.target.value)}
-                    />
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+                    <div className="glass" style={{ padding: '2rem' }}>
+                        <label>Your Profile / Skills</label>
+                        <textarea
+                            placeholder="e.g. Python, React, SQL, project management..."
+                            rows="5"
+                            value={profile}
+                            onChange={(e) => {
+                                setProfile(e.target.value)
+                                localStorage.setItem('saved_profile', e.target.value)
+                            }}
+                        />
 
-                    <label>Interests (comma separated)</label>
-                    <input
-                        placeholder="Fintech, AI, Healthcare, Remote..."
-                        value={interests}
-                        onChange={(e) => setInterests(e.target.value)}
-                    />
+                        <label>Interests (comma separated)</label>
+                        <input
+                            placeholder="Fintech, AI, Healthcare, Remote..."
+                            value={interests}
+                            onChange={(e) => {
+                                setInterests(e.target.value)
+                                localStorage.setItem('saved_interests', e.target.value)
+                            }}
+                        />
 
-                    <button className="btn btn-primary" style={{ width: '100%' }} onClick={handleMatch} disabled={loading || !profile}>
-                        {loading ? 'Finding Matches...' : 'Find Matches'}
-                    </button>
+                        <button className="btn btn-primary" style={{ width: '100%' }} onClick={handleMatch} disabled={loading || !profile}>
+                            {loading ? 'Finding Matches...' : 'Find Matches'}
+                        </button>
+                    </div>
+
+                    {history.length > 0 && (
+                        <div className="glass" style={{ padding: '1.5rem' }}>
+                            <h4 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem', fontSize: '1rem' }}>
+                                <Clock size={16} /> Recent Searches
+                            </h4>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.8rem' }}>
+                                {history.map((h, i) => (
+                                    <div
+                                        key={i}
+                                        className="hover-glow"
+                                        style={{
+                                            padding: '0.8rem',
+                                            borderRadius: '8px',
+                                            background: 'rgba(255,255,255,0.03)',
+                                            fontSize: '0.85rem',
+                                            cursor: 'pointer',
+                                            border: '1px solid var(--glass-border)'
+                                        }}
+                                        onClick={() => {
+                                            setProfile(h.profile)
+                                            setInterests(h.interests)
+                                        }}
+                                    >
+                                        <div style={{ fontWeight: '600', color: 'var(--primary)', marginBottom: '0.2rem' }}>{h.interests}</div>
+                                        <div style={{ opacity: 0.7, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{h.profile}</div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
                 </div>
 
                 <div className="glass" style={{ padding: '2rem' }}>

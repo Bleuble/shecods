@@ -121,7 +121,7 @@ function App() {
       </main>
 
       <footer style={{ padding: '4rem 0', borderTop: '1px solid var(--border)', marginTop: '4rem', textAlign: 'center', color: 'var(--text-muted)' }}>
-        <p>© 2026 AI Career Assistant. Built with ❤️ for students.</p>
+        <p>Powerpuff</p>
       </footer>
     </div>
   )
@@ -141,11 +141,11 @@ function Home({ onStart, onNavigate }) {
         <p>Land your dream internship with AI-driven resume optimization, interview practice, and personalized job matching.</p>
         <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center' }}>
           <button className="btn btn-primary" onClick={onStart}>Get Started</button>
-          <button className="btn btn-outline">Learn More</button>
+          <button className="btn btn-outline" onClick={() => document.getElementById("features").scrollIntoView({ behavior: "smooth" })}>Learn More</button>
         </div>
       </section>
 
-      <section className="features">
+      <section className="features" id="features">
         <div className="feature-card glass" onClick={() => onNavigate('cvbuilder')} style={{ cursor: 'pointer' }}>
           <div className="icon"><FileText /></div>
           <h3>Harvard CV Builder</h3>

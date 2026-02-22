@@ -1,13 +1,13 @@
 import React, { useState, useEffect } from 'react'
 import axios from 'axios'
-import { Mail, Copy, Check, FileText } from 'lucide-react'
+import { Mail, Copy, Check, FileText, Trash2 } from 'lucide-react'
 
 const API_URL = 'http://127.0.0.1:8000'
 
 export default function CoverLetterGenerator({ prefilledJob }) {
-    const [resume, setResume] = useState('')
-    const [jobDesc, setJobDesc] = useState('')
-    const [letter, setLetter] = useState('')
+    const [resume, setResume] = useState(localStorage.getItem('saved_cl_resume') || '')
+    const [jobDesc, setJobDesc] = useState(localStorage.getItem('saved_cl_job') || '')
+    const [letter, setLetter] = useState(localStorage.getItem('saved_cl_result') || '')
     const [loading, setLoading] = useState(false)
     const [copied, setCopied] = useState(false)
 
@@ -16,6 +16,12 @@ export default function CoverLetterGenerator({ prefilledJob }) {
             setJobDesc(`${prefilledJob.title} at ${prefilledJob.company}\n\n${prefilledJob.description}`)
         }
     }, [prefilledJob])
+
+    useEffect(() => {
+        localStorage.setItem('saved_cl_resume', resume)
+        localStorage.setItem('saved_cl_job', jobDesc)
+        localStorage.setItem('saved_cl_result', letter)
+    }, [resume, jobDesc, letter])
 
     const handleGenerate = async () => {
         setLoading(true)
@@ -41,6 +47,15 @@ export default function CoverLetterGenerator({ prefilledJob }) {
         setTimeout(() => setCopied(false), 2000)
     }
 
+    const handleClear = () => {
+        setResume('')
+        setJobDesc('')
+        setLetter('')
+        localStorage.removeItem('saved_cl_resume')
+        localStorage.removeItem('saved_cl_job')
+        localStorage.removeItem('saved_cl_result')
+    }
+
     return (
         <div className="fade-in">
             <div className="section-header">
@@ -50,7 +65,12 @@ export default function CoverLetterGenerator({ prefilledJob }) {
 
             <div className="grid-1-1">
                 <div className="glass" style={{ padding: '2rem' }}>
-                    <label>Your Resume / Experience</label>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                        <label>Your Resume / Experience</label>
+                        <button onClick={handleClear} style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.8rem' }}>
+                            <Trash2 size={14} /> Clear
+                        </button>
+                    </div>
                     <textarea
                         placeholder="Paste your resume or key achievements..."
                         rows="8"

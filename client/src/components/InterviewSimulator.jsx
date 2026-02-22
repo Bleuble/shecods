@@ -1,21 +1,31 @@
 import React, { useState, useEffect } from 'react'
 import axios from 'axios'
-import { MessageSquare, Play, Send, User, Bot, Loader } from 'lucide-react'
+import { MessageSquare, Play, Send, User, Bot, Loader, Trash2 } from 'lucide-react'
 
 const API_URL = 'http://127.0.0.1:8000'
 
 export default function InterviewSimulator({ prefilledPosition }) {
-    const [position, setPosition] = useState('')
-    const [level, setLevel] = useState('Junior')
-    const [questions, setQuestions] = useState([])
-    const [currentQuestionIndex, setCurrentQuestionIndex] = useState(-1)
+    const [position, setPosition] = useState(localStorage.getItem('int_pos') || '')
+    const [level, setLevel] = useState(localStorage.getItem('int_level') || 'Junior')
+    const [questions, setQuestions] = useState(() => JSON.parse(localStorage.getItem('int_qs') || '[]'))
+    const [currentQuestionIndex, setCurrentQuestionIndex] = useState(() => parseInt(localStorage.getItem('int_idx')) || -1)
     const [loading, setLoading] = useState(false)
-    const [answers, setAnswers] = useState({})
-    const [feedback, setFeedback] = useState(null)
+    const [answers, setAnswers] = useState(() => JSON.parse(localStorage.getItem('int_answers') || '{}'))
+    const [feedback, setFeedback] = useState(localStorage.getItem('int_feedback') || null)
 
     useEffect(() => {
-        if (prefilledPosition) setPosition(prefilledPosition)
+        if (prefilledPosition && !position) setPosition(prefilledPosition)
     }, [prefilledPosition])
+
+    useEffect(() => {
+        localStorage.setItem('int_pos', position)
+        localStorage.setItem('int_level', level)
+        localStorage.setItem('int_qs', JSON.stringify(questions))
+        localStorage.setItem('int_idx', currentQuestionIndex)
+        localStorage.setItem('int_answers', JSON.stringify(answers))
+        if (feedback) localStorage.setItem('int_feedback', feedback)
+        else localStorage.removeItem('int_feedback')
+    }, [position, level, questions, currentQuestionIndex, answers, feedback])
 
     const handleStart = async () => {
         setLoading(true)
@@ -28,10 +38,11 @@ export default function InterviewSimulator({ prefilledPosition }) {
                 headers: { Authorization: `Bearer ${token}` }
             })
 
-            // Clean up response string to get list
             const qs = response.data.questions.split('\n').filter(q => q.trim() && (q.includes('?') || q.match(/^\d+\./)))
             setQuestions(qs)
             setCurrentQuestionIndex(0)
+            setAnswers({})
+            setFeedback(null)
         } catch (err) {
             console.error(err)
             alert("Failed to generate questions. Please make sure you're logged in.")
@@ -44,10 +55,20 @@ export default function InterviewSimulator({ prefilledPosition }) {
         if (currentQuestionIndex < questions.length - 1) {
             setCurrentQuestionIndex(curr => curr + 1)
         } else {
-            // Mock finishing
+            const fb = "Great job! Your answers show strong technical knowledge. Work on being more concise in behavioral questions."
+            setFeedback(fb)
             setCurrentQuestionIndex(-1)
-            setFeedback("Great job! Your answers show strong technical knowledge. Work on being more concise in behavioral questions.")
         }
+    }
+
+    const handleReset = () => {
+        setPosition('')
+        setLevel('Junior')
+        setQuestions([])
+        setCurrentQuestionIndex(-1)
+        setAnswers({})
+        setFeedback(null)
+        localStorage.clear() // Or just remove specific keys
     }
 
     return (
@@ -58,6 +79,12 @@ export default function InterviewSimulator({ prefilledPosition }) {
             </div>
 
             <div className="glass" style={{ padding: '2rem', maxWidth: '800px', margin: '0 auto' }}>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '1rem' }}>
+                    <button onClick={handleReset} style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.8rem' }}>
+                        <Trash2 size={14} /> Reset Simulator
+                    </button>
+                </div>
+
                 {currentQuestionIndex === -1 && !feedback && (
                     <div className="fade-in">
                         <label>Target Position</label>

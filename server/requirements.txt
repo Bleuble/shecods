@@ -4,9 +4,9 @@ google-generativeai
 python-dotenv
 sqlalchemy
 psycopg2-binary
-passlib[bcrypt]
+bcrypt
 python-jose[cryptography]
 python-multipart
-营销google-generativeai
 pydantic
-python-multipart
+pydantic-settings
+httpx

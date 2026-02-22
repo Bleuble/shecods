@@ -1,6 +1,7 @@
 import os
 import random
 import json
+import time
 from datetime import datetime, timedelta
 from typing import List, Optional
 
@@ -15,14 +16,15 @@ import bcrypt
 from jose import JWTError, jwt
 from dotenv import load_dotenv
 import google.generativeai as genai
+import httpx
 
 load_dotenv()
 
 # Database Setup
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/career_ai")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./career_ai.db")
 SECRET_KEY = os.getenv("SECRET_KEY", "yoursecretkeyhere")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 30))
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 15))
 
 if DATABASE_URL.startswith("sqlite"):
     engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
@@ -31,9 +33,6 @@ else:
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
-
-# Auth Setup
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 # Models
 class User(Base):
@@ -45,6 +44,15 @@ class User(Base):
     bio = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
 
+class SearchHistory(Base):
+    __tablename__ = "search_history"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer)
+    profile = Column(Text)
+    interests = Column(String)
+    results_count = Column(Integer)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 Base.metadata.create_all(bind=engine)
 
 # Pydantic Schemas
@@ -53,20 +61,39 @@ class UserCreate(BaseModel):
     email: str
     password: str
 
-class UserLogin(BaseModel):
-    email: str
-    password: str
-
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-
 class UserProfile(BaseModel):
     name: str
     email: str
     bio: str
 
-# Helpers
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+class JobMatchRequest(BaseModel):
+    profile: str
+    interests: List[str]
+
+class ResumeAnalysisRequest(BaseModel):
+    resume_text: str
+
+class InterviewRequest(BaseModel):
+    position: str
+    experience_level: str
+    resume_context: Optional[str] = ""
+
+class CoverLetterRequest(BaseModel):
+    resume_text: str
+    job_description: str
+
+# Auth Utilities
+def get_password_hash(password):
+    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+def verify_password(plain_password, hashed_password):
+    return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
+
+# DB Dependency
 def get_db():
     db = SessionLocal()
     try:
@@ -74,51 +101,34 @@ def get_db():
     finally:
         db.close()
 
-def verify_password(plain_password, hashed_password):
-    return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
-
-def get_password_hash(password):
-    salt = bcrypt.gensalt()
-    return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
-
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
     if expires_delta:
         expire = datetime.utcnow() + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
+        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
-async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+async def get_current_user(token: str = Depends(OAuth2PasswordBearer(tokenUrl="login")), db: Session = Depends(get_db)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        print(f"Validating token: {token[:10]}...")
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         email: str = payload.get("sub")
-        if email is None:
-            print("Token validation failed: No 'sub' (email) in payload")
-            raise credentials_exception
-    except JWTError as e:
-        print(f"Token validation failed: JWT Error - {str(e)}")
-        raise credentials_exception
+        if email is None: raise credentials_exception
+    except JWTError: raise credentials_exception
     
     user = db.query(User).filter(User.email == email).first()
-    if user is None:
-        print(f"Token validation failed: User {email} not found in database")
-        raise credentials_exception
-    
-    print(f"Token validated for: {email}")
+    if user is None: raise credentials_exception
     return user
 
 app = FastAPI(title="AI Career Assistant API")
 
-# Configure CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -127,84 +137,78 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configure Gemini
+# ============================================================
+# GEMINI AI SETUP - Multiple models for maximum reliability
+# ============================================================
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+MODEL_NAMES = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-flash-lite-latest"]
+
+ai_models = []
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-1.5-flash')
-else:
-    model = None
+    for name in MODEL_NAMES:
+        try:
+            ai_models.append(genai.GenerativeModel(name))
+            print(f"[AI] Loaded model: {name}")
+        except Exception as e:
+            print(f"[AI] Could not load {name}: {e}")
 
-class ResumeAnalysisRequest(BaseModel):
-    resume_text: str
+print(f"[AI] Total available models: {len(ai_models)}")
 
-class InterviewRequest(BaseModel):
-    position: str
-    experience_level: str
-    resume_context: Optional[str] = None
+def safe_generate(prompt):
+    """Try each model in order until one works. Never crash."""
+    if not ai_models:
+        print("[AI] No models available!")
+        return None
+    
+    for i, model in enumerate(ai_models):
+        try:
+            resp = model.generate_content(prompt)
+            if resp and resp.text:
+                return resp.text
+        except Exception as e:
+            err_str = str(e)
+            print(f"[AI] Model {i} failed: {err_str[:120]}")
+            if "429" in err_str or "ResourceExhausted" in err_str:
+                # Rate limited - try next model immediately
+                continue
+            elif "404" in err_str:
+                # Model doesn't exist - try next
+                continue
+            else:
+                # Unknown error - try next
+                continue
+    
+    print("[AI] ALL models failed.")
+    return None
 
-class JobMatchRequest(BaseModel):
-    profile: str
-    interests: List[str]
+# ============================================================
 
-class Job(BaseModel):
-    id: str
-    title: str
-    company: str
-    location: str
-    type: str 
-    description: str
-    skills: List[str]
-    link: str
-
-class CoverLetterRequest(BaseModel):
-    resume_text: str
-    job_description: str
 @app.get("/")
 async def root():
     return {"message": "AI Career Assistant API is running"}
 
 @app.post("/register", response_model=Token)
 async def register(user: UserCreate, db: Session = Depends(get_db)):
-    print(f"Registering user: {user.email}")
     db_user = db.query(User).filter(User.email == user.email).first()
-    if db_user:
-        print(f"Email already registered: {user.email}")
-        raise HTTPException(status_code=400, detail="Email already registered")
+    if db_user: raise HTTPException(status_code=400, detail="Email already registered")
     
-    hashed_password = get_password_hash(user.password)
-    new_user = User(name=user.name, email=user.email, hashed_password=hashed_password)
+    new_user = User(name=user.name, email=user.email, hashed_password=get_password_hash(user.password))
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
-    print(f"User created: {new_user.email}")
-    
-    access_token = create_access_token(data={"sub": new_user.email})
-    return {"access_token": access_token, "token_type": "bearer"}
+    return {"access_token": create_access_token(data={"sub": new_user.email}), "token_type": "bearer"}
 
 @app.post("/login", response_model=Token)
 async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    print(f"Login attempt for: {form_data.username}")
     user = db.query(User).filter(User.email == form_data.username).first()
-    if not user:
-        print(f"User not found: {form_data.username}")
-    elif not verify_password(form_data.password, user.hashed_password):
-        print(f"Invalid password for: {form_data.username}")
-    
     if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(status_code=400, detail="Incorrect email or password")
-    
-    print(f"Login successful for: {user.email}")
-    access_token = create_access_token(data={"sub": user.email})
-    return {"access_token": access_token, "token_type": "bearer"}
+    return {"access_token": create_access_token(data={"sub": user.email}), "token_type": "bearer"}
 
 @app.get("/me", response_model=UserProfile)
 async def get_me(current_user: User = Depends(get_current_user)):
-    return {
-        "name": current_user.name,
-        "email": current_user.email,
-        "bio": current_user.bio or ""
-    }
+    return {"name": current_user.name, "email": current_user.email, "bio": current_user.bio or ""}
 
 @app.post("/update-profile")
 async def update_profile(profile: UserProfile, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -213,232 +217,158 @@ async def update_profile(profile: UserProfile, current_user: User = Depends(get_
     db.commit()
     return {"message": "Profile updated successfully"}
 
-@app.post("/analyze-resume")
-async def analyze_resume(request: ResumeAnalysisRequest, current_user: Optional[User] = Depends(get_current_user)):
-    if not model or not GEMINI_API_KEY:
-        return {
-            "analysis": {
-                "score": 85,
-                "strengths": ["Clear structure", "Relevant experience", "Good technical skills"],
-                "weaknesses": ["Missing quantitative achievements", "Skill section could be more specific"],
-                "suggestions": "Add more numbers to your achievements (e.g. 'Improved speed by 20%')."
-            }
-        }
-    
-    user_bio_context = f"User Bio: {current_user.bio}\n\n" if current_user and current_user.bio else ""
+@app.get("/search-history")
+async def get_search_history(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    history = db.query(SearchHistory).filter(SearchHistory.user_id == current_user.id).order_by(SearchHistory.created_at.desc()).limit(10).all()
+    return {"history": history}
 
-    prompt = f"""
-    Analyze the following resume and provide:
-    1. A score from 1-100.
-    2. Strengths.
-    3. Weaknesses/Areas for improvement.
-    4. Suggestions for better wording or missing keywords.
-    
-    {user_bio_context}
-    Resume:
-    {request.resume_text}
-    
-    Format the response as JSON with keys: 'score', 'strengths', 'weaknesses', 'suggestions'.
-    """
-    
-    response = model.generate_content(prompt)
-    return {"analysis": response.text}
-
-@app.post("/generate-interview-questions")
-async def generate_questions(request: InterviewRequest, current_user: Optional[User] = Depends(get_current_user)):
-    if not model or not GEMINI_API_KEY:
-        # Specialized dummy responses based on common roles
-        pos = request.position.lower()
-        if "soft" in pos or "dev" in pos or "eng" in pos:
-            responses = [
-                "I see you're interested in the Software role. Let's delve deep: How would you design a system to handle 1 million concurrent requests while maintaining low latency?",
-                "Interesting. Regarding your technical stack, how do you manage state in large-scale applications, and what trade-offs do you consider?",
-                "Let's talk architecture. Can you explain the difference between microservices and monolithic design in the context of a high-growth startup?",
-                "How do you approach unit testing and quality assurance for mission-critical code?",
-                "Tell me about a time you had to optimize an algorithm that was performing poorly. What was the Big O before and after?"
-            ]
-        elif "design" in pos or "ui" in pos or "ux" in pos:
-            responses = [
-                "Walk me through your design process. How do you balance aesthetic 'wow' factor with strict accessibility requirements?",
-                "When a stakeholder disagrees with a data-driven UX decision, how do you defend your design while maintaining a collaborative relationship?",
-                "How do you stay current with evolving design systems and component-based UI architectures?",
-                "Describe a project where you had to simplify a complex user flow. What was the measurable impact on conversion?",
-                "What is your philosophy on 'Mobile First' vs 'Responsive' design in 2026?"
-            ]
-        else:
-            responses = [
-                f"As we consider you for the {request.position} role, tell me: what is the single most misunderstood aspect of this industry, and how do you navigate it?",
-                "I want to hear about your strategic approach. If you were given a $1M budget to improve our operations, where would you start and why?",
-                "Describe a high-stakes situation where you had to make a decision with incomplete data. What was the outcome?",
-                "How do you define 'excellence' in this field, and how does your past experience demonstrate it?",
-                "What is the most innovative solution you've implemented recently that challenged the status quo?"
-            ]
-        return {"questions": random.choice(responses)}
-    
-    final_resume_context = request.resume_context or ""
-    if current_user and current_user.bio:
-        final_resume_context = f"User Bio: {current_user.bio}\n\n{final_resume_context}"
-
-    prompt = f"""
-    You are a Senior Hiring Manager from a Tier-1 Tech Company (like Google, Amazon, or Meta). 
-    You are conducting a rigorous interview for a {request.position} position.
-    
-    Candidate Context (CV/Background):
-    {final_resume_context if final_resume_context else 'Not provided'}
-    
-    Your Objective:
-    1. AVOID 'DUMB' OR GENERIC QUESTIONS (e.g., 'What are your strengths?', 'Tell me about yourself').
-    2. Ask SHARP, TECHNICAL, or STRATEGIC questions that reveal the candidate's TRUE depth.
-    3. Dig into SPECIFIC details of their mentioned projects or the role's core challenges.
-    4. Respond BRIEFLY to their last answer (e.g., 'That's a sound architectural choice' or 'I see your point about X') and then MOVE DIRECTLY to the next challenging question.
-    5. ASK ONLY ONE QUESTION AT A TIME.
-    
-    The language for the response must be: {final_resume_context.split('Language: ')[-1].split('\n')[0] if 'Language: ' in (final_resume_context or '') else 'Match the candidate'}
-    
-    Provide ONLY the spoken text of the interviewer. Be elite, professional, and intellectually demanding.
-    """
-    
-    response = model.generate_content(prompt)
-    return {"questions": response.text}
-
-@app.post("/generate-voice-interview")
-async def voice_interview(request: InterviewRequest, current_user: Optional[User] = Depends(get_current_user)):
-    if not model or not GEMINI_API_KEY:
-        # Specialized dummy responses based on common roles
-        pos = request.position.lower()
-        if "soft" in pos or "dev" in pos or "eng" in pos:
-            responses = [
-                "I see you're interested in the Software role. Let's delve deep: How would you design a system to handle 1 million concurrent requests while maintaining low latency?",
-                "Interesting. Regarding your technical stack, how do you manage state in large-scale applications, and what trade-offs do you consider?",
-                "Let's talk architecture. Can you explain the difference between microservices and monolithic design in the context of a high-growth startup?",
-                "How do you approach unit testing and quality assurance for mission-critical code?",
-                "Tell me about a time you had to optimize an algorithm that was performing poorly. What was the Big O before and after?"
-            ]
-        elif "design" in pos or "ui" in pos or "ux" in pos:
-            responses = [
-                "Walk me through your design process. How do you balance aesthetic 'wow' factor with strict accessibility requirements?",
-                "When a stakeholder disagrees with a data-driven UX decision, how do you defend your design while maintaining a collaborative relationship?",
-                "How do you stay current with evolving design systems and component-based UI architectures?",
-                "Describe a project where you had to simplify a complex user flow. What was the measurable impact on conversion?",
-                "What is your philosophy on 'Mobile First' vs 'Responsive' design in 2026?"
-            ]
-        else:
-            responses = [
-                f"As we consider you for the {request.position} role, tell me: what is the single most misunderstood aspect of this industry, and how do you navigate it?",
-                "I want to hear about your strategic approach. If you were given a $1M budget to improve our operations, where would you start and why?",
-                "Describe a high-stakes situation where you had to make a decision with incomplete data. What was the outcome?",
-                "How do you define 'excellence' in this field, and how does your past experience demonstrate it?",
-                "What is the most innovative solution you've implemented recently that challenged the status quo?"
-            ]
-        return {"questions": random.choice(responses)}
-    
-    final_resume_context = request.resume_context or ""
-    if current_user and current_user.bio:
-        final_resume_context = f"User Bio: {current_user.bio}\n\n{final_resume_context}"
-    
-    prompt = f"""
-    You are a Senior Hiring Manager from a Tier-1 Tech Company (like Google, Amazon, or Meta). 
-    You are conducting a rigorous interview for a {request.position} position.
-    
-    Candidate Context (CV/Background):
-    {final_resume_context if final_resume_context else 'Not provided'}
-    
-    Your Objective:
-    1. AVOID 'DUMB' OR GENERIC QUESTIONS (e.g., 'What are your strengths?', 'Tell me about yourself').
-    2. Ask SHARP, TECHNICAL, or STRATEGIC questions that reveal the candidate's TRUE depth.
-    3. Dig into SPECIFIC details of their mentioned projects or the role's core challenges.
-    4. Respond BRIEFLY to their last answer (e.g., 'That's a sound architectural choice' or 'I see your point about X') and then MOVE DIRECTLY to the next challenging question.
-    5. ASK ONLY ONE QUESTION AT A TIME.
-    
-    The language for the response must be: {final_resume_context.split('Language: ')[-1].split('\n')[0] if 'Language: ' in (final_resume_context or '') else 'Match the candidate'}
-    
-    Provide ONLY the spoken text of the interviewer. Be elite, professional, and intellectually demanding.
-    """
-    
-    response = model.generate_content(prompt)
-    return {"questions": response.text}
+async def fetch_hh_vacancies(query: str, area: int = 40):
+    url = "https://api.hh.ru/vacancies"
+    params = {"text": query, "area": area, "per_page": 10}
+    headers = {"User-Agent": "AI-Career-Assistant/1.0"}
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.get(url, params=params, headers=headers)
+            if resp.status_code == 200: return resp.json().get("items", [])
+        except: pass
+    return []
 
 @app.post("/match-jobs")
-async def match_jobs(request: JobMatchRequest, current_user: Optional[User] = Depends(get_current_user)):
-    if not model or not GEMINI_API_KEY:
-        # High-quality realistic mock data
-        return {
-            "matches": [
-                {
-                    "id": "1",
-                    "title": "Junior Frontend Developer",
-                    "company": "TechFlow Systems",
-                    "location": "Remote / Almaty",
-                    "type": "Full-time",
-                    "description": "Building modern React applications with Vite and Tailwind. Focus on performance and accessibility.",
-                    "skills": ["React", "JavaScript", "CSS"],
-                    "link": "https://techflow.example.com/jobs/1"
-                },
-                {
-                    "id": "2",
-                    "title": "Software Engineering Intern",
-                    "company": "DataScale AI",
-                    "location": "Astana / Hybrid",
-                    "type": "Internship",
-                    "description": "Work on backend scaling issues using Python and FastAPI. Assist in training small language models.",
-                    "skills": ["Python", "SQL", "API Design"],
-                    "link": "https://datascale.example.com/careers/intern"
-                },
-                {
-                    "id": "3",
-                    "title": "UI/UX Design Intern",
-                    "company": "CreativePulse",
-                    "location": "Remote",
-                    "type": "Internship",
-                    "description": "Design interactive prototypes and user flows for a new fintech mobile app.",
-                    "skills": ["Figma", "UI Design", "User Research"],
-                    "link": "https://creativepulse.example.com/apply"
-                }
-            ]
-        }
+async def match_jobs(request: JobMatchRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    queries = request.interests[:3]
+    all_hh_jobs = []
+    for q in queries:
+        jobs = await fetch_hh_vacancies(q)
+        all_hh_jobs.extend(jobs)
     
-    prompt = f"""
-    Based on this profile: {request.profile}
-    And these interests: {', '.join(request.interests)}
+    if not all_hh_jobs: all_hh_jobs = await fetch_hh_vacancies("Software Engineer Intern")
+
+    job_candidates = []
+    for j in all_hh_jobs[:15]:
+        job_candidates.append({
+            "id": j.get("id"),
+            "title": j.get("name"),
+            "company": j.get("employer", {}).get("name"),
+            "location": j.get("area", {}).get("name"),
+            "type": j.get("employment", {}).get("name", "Full-time"),
+            "description": (j.get("snippet", {}).get("requirement", "") or "") + " " + (j.get("snippet", {}).get("responsibility", "") or ""),
+            "skills": [],
+            "link": j.get("alternate_url")
+        })
+
+    prompt = f"You are an AI career advisor. Select the 5 best matching jobs from the list below for this user.\n\nUser Profile: {request.profile}\nInterests: {', '.join(request.interests)}\nJob Candidates:\n{json.dumps(job_candidates, ensure_ascii=False)}\n\nReturn ONLY a valid JSON array with keys: id, title, company, location, type, description, skills (list of strings), link. No extra text."
     
-    Acts as a real-world Job Search Engine. Generate 5 REALISTIC-LOOKING job vacancies that match this user.
-    Provide the response strictly as a JSON list of objects with keys: 
-    'id', 'title', 'company', 'location', 'type', 'description', 'skills' (list), 'link'.
-    """
+    res_text = safe_generate(prompt)
+    if res_text:
+        try:
+            cleaned = res_text.replace('```json', '').replace('```', '').strip()
+            jobs = json.loads(cleaned)
+            new_h = SearchHistory(user_id=current_user.id, profile=request.profile, interests=", ".join(request.interests), results_count=len(jobs))
+            db.add(new_h)
+            db.commit()
+            return {"matches": jobs}
+        except: pass
     
-    response = model.generate_content(prompt)
-    try:
-        # Extract JSON from markdown if Gemini wraps it
-        cleaned_text = response.text.replace('```json', '').replace('```', '').strip()
-        jobs = json.loads(cleaned_text)
-        return {"matches": jobs}
-    except:
-        return {"matches": [], "error": "Failed to parse job data"}
+    return {"matches": job_candidates[:5]}
+
+@app.post("/analyze-resume")
+async def analyze_resume(request: ResumeAnalysisRequest, current_user: User = Depends(get_current_user)):
+    prompt = f"""You are a professional resume reviewer. Analyze the following resume and provide detailed feedback.
+
+Resume:
+{request.resume_text}
+
+Respond with a JSON object containing:
+- "score": a number 0-100
+- "strengths": list of 3-5 strengths
+- "weaknesses": list of 3-5 weaknesses  
+- "suggestions": list of 3-5 actionable improvements
+- "raw": a 2-3 paragraph detailed summary
+
+Return ONLY valid JSON, no extra text."""
+
+    res_text = safe_generate(prompt)
+    if res_text:
+        return {"analysis": res_text}
+    return {"analysis": "AI is temporarily unavailable. Please try again in a minute."}
+
+class FixResumeRequest(BaseModel):
+    resume_text: str
+    analysis_feedback: Optional[str] = ""
+
+@app.post("/fix-resume")
+async def fix_resume(request: FixResumeRequest, current_user: User = Depends(get_current_user)):
+    prompt = f"""You are a world-class professional resume writer. Your job is to take the user's original resume and rewrite it into a polished, improved version.
+
+ORIGINAL RESUME:
+{request.resume_text}
+
+ANALYSIS FEEDBACK (issues to fix):
+{request.analysis_feedback}
+
+INSTRUCTIONS:
+1. Keep ALL the user's real information (name, contacts, education, experience, projects) — do NOT invent anything.
+2. Fix grammar, spelling, and formatting issues.
+3. Rewrite bullet points to use strong action verbs and quantify achievements where possible.
+4. Improve the professional summary / objective section.
+5. Organize sections in the best order (Contact → Summary → Experience → Education → Skills → Projects).
+6. Make it ATS-friendly.
+7. If the user's resume is in Russian or Kazakh, keep it in that language but improve it professionally.
+8. Output ONLY the improved resume text, ready to copy-paste. No extra commentary."""
+
+    res_text = safe_generate(prompt)
+    if res_text:
+        return {"fixed_resume": res_text}
+    return {"fixed_resume": "AI is temporarily unavailable. Please try again in a minute."}
+
+@app.post("/generate-interview-questions")
+async def generate_questions(request: InterviewRequest, current_user: User = Depends(get_current_user)):
+    # The resume_context field carries the full conversation context from the Voice Coach
+    context = request.resume_context or ""
+    
+    prompt = f"""You are an experienced interview coach conducting a practice interview for the position of: {request.position}
+
+Here is the conversation context:
+{context}
+
+IMPORTANT RULES:
+1. You MUST read and understand what the user just said.
+2. If the user answered a question, give brief feedback on their answer (what was good, what could be better), then ask a new follow-up question.
+3. If this is the start of the interview, introduce yourself briefly and ask the first question.
+4. Ask only ONE question at a time.
+5. Be professional but encouraging and warm.
+6. If the user speaks in Russian or Kazakh, respond in the same language.
+7. Keep your response concise (2-4 sentences max).
+8. Make questions relevant to the position: {request.position}
+
+Respond naturally as a real interviewer would."""
+
+    res_text = safe_generate(prompt)
+    if res_text:
+        return {"questions": res_text}
+    return {"questions": "I apologize, I'm having a brief technical issue. Could you repeat what you said? I want to make sure I give you the best feedback."}
 
 @app.post("/generate-cover-letter")
-async def generate_cover_letter(request: CoverLetterRequest, current_user: Optional[User] = Depends(get_current_user)):
-    if not model or not GEMINI_API_KEY:
-        return {
-            "cover_letter": "Dear Hiring Manager,\n\nI am excited to apply for the position. With my background in technology and passion for innovation, I am confident I would be a great fit for your team.\n\nThank you for your consideration.\n\nBest regards,\n[Your Name]"
-        }
-    
-    user_bio_context = f"User Bio: {current_user.bio}\n\n" if current_user and current_user.bio else ""
-    
-    prompt = f"""
-    Generate a personalized cover letter using this resume and job description.
-    
-    {user_bio_context}
-    Resume:
-    {request.resume_text}
-    
-    Job Description:
-    {request.job_description}
-    
-    Make it professional, engaging, and highlight specific achievements from the resume that match the job.
-    """
-    
-    response = model.generate_content(prompt)
-    return {"cover_letter": response.text}
+async def generate_cover_letter(request: CoverLetterRequest, current_user: User = Depends(get_current_user)):
+    prompt = f"""You are an expert career consultant. Write a compelling, personalized cover letter.
+
+Resume:
+{request.resume_text}
+
+Job Description:
+{request.job_description}
+
+Write a professional cover letter that:
+1. Is personalized to the specific job
+2. Highlights relevant experience from the resume
+3. Shows enthusiasm and fit for the role
+4. Is 3-4 paragraphs long
+5. Does NOT use generic placeholders like [Company Name] - use real details from the job description"""
+
+    res_text = safe_generate(prompt)
+    if res_text:
+        return {"cover_letter": res_text}
+    return {"cover_letter": "AI is temporarily unavailable. Please try again in a minute."}
 
 if __name__ == "__main__":
     import uvicorn

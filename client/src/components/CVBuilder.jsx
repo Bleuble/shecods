@@ -1,17 +1,28 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { User, GraduationCap, Briefcase, Code, Terminal, Printer, Download, Plus, Trash2, ArrowRight, ArrowLeft } from 'lucide-react'
 
 export default function CVBuilder() {
-    const [step, setStep] = useState(1)
-    const [formData, setFormData] = useState({
-        personal: { name: '', email: '', phone: '', location: '', linkedin: '', website: '' },
-        education: [{ school: '', degree: '', major: '', gpa: '', date: '', location: '', coursework: '' }],
-        experience: [{ company: '', position: '', date: '', location: '', description: [''] }],
-        projects: [{ title: '', technologies: '', date: '', description: [''] }],
-        skills: { technical: '', tools: '', languages: '' }
+    const [step, setStep] = useState(parseInt(localStorage.getItem('cv_step')) || 1)
+    const [formData, setFormData] = useState(() => {
+        const saved = localStorage.getItem('cv_data')
+        return saved ? JSON.parse(saved) : {
+            personal: { name: '', email: '', phone: '', location: '', linkedin: '', website: '' },
+            education: [{ school: '', degree: '', major: '', gpa: '', date: '', location: '', coursework: '' }],
+            experience: [{ company: '', position: '', date: '', location: '', description: [''] }],
+            projects: [{ title: '', technologies: '', date: '', description: [''] }],
+            skills: { technical: '', tools: '', languages: '' }
+        }
     })
     const [showPreview, setShowPreview] = useState(false)
+
+    useEffect(() => {
+        localStorage.setItem('cv_data', JSON.stringify(formData))
+    }, [formData])
+
+    useEffect(() => {
+        localStorage.setItem('cv_step', step)
+    }, [step])
 
     const handlePersonalChange = (e) => {
         const { name, value } = e.target
@@ -183,7 +194,11 @@ export default function CVBuilder() {
                         <button className="btn btn-outline" onClick={prevStep} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                             <ArrowLeft size={18} /> Previous
                         </button>
-                    ) : <div></div>}
+                    ) : (
+                        <button className="btn btn-outline" onClick={() => { localStorage.removeItem('cv_data'); window.location.reload(); }} style={{ color: '#ef4444' }}>
+                            Reset CV
+                        </button>
+                    )}
 
                     {step < 4 ? (
                         <button className="btn btn-primary" onClick={nextStep} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -228,19 +243,13 @@ function HarvardCVPreview({ data, onBack }) {
                 lineHeight: '1.4',
                 boxShadow: '0 0 20px rgba(0,0,0,0.1)'
             }}>
-                {/* Header */}
                 <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
                     <h1 style={{ fontSize: '18pt', fontWeight: 'bold', margin: '0', textTransform: 'uppercase', letterSpacing: '1px' }}>{data.personal.name || 'YOUR NAME'}</h1>
                     <div style={{ fontSize: '10pt', marginTop: '5px' }}>
                         {data.personal.location} | {data.personal.phone} | {data.personal.email}
                     </div>
-                    <div style={{ fontSize: '10pt' }}>
-                        {data.personal.linkedin && <span>LinkedIn: {data.personal.linkedin}</span>}
-                        {data.personal.website && <span> | Portfolio: {data.personal.website}</span>}
-                    </div>
                 </div>
 
-                {/* Education */}
                 <Section title="EDUCATION" />
                 {data.education.map((edu, i) => (
                     <div key={i} style={{ marginBottom: '1rem' }}>
@@ -255,7 +264,6 @@ function HarvardCVPreview({ data, onBack }) {
                     </div>
                 ))}
 
-                {/* Experience */}
                 <Section title="EXPERIENCE" />
                 {data.experience.map((exp, i) => (
                     <div key={i} style={{ marginBottom: '1rem' }}>
@@ -275,8 +283,6 @@ function HarvardCVPreview({ data, onBack }) {
                     </div>
                 ))}
 
-                {/* Projects if any, or merge with experience */}
-                {/* Skills */}
                 <Section title="SKILLS & INTERESTS" />
                 <div style={{ fontSize: '10.5pt' }}>
                     {data.skills.technical && <div><strong>Technical Skills:</strong> {data.skills.technical}</div>}
