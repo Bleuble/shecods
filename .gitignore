@@ -11,8 +11,6 @@ __pycache__/
 server/__pycache__/
 *.pyc
 server/*.pyc
-.env
-server/.env
 
 # Local Database
 *.db
