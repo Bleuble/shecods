@@ -3,7 +3,7 @@ import axios from 'axios'
 import html2pdf from 'html2pdf.js'
 import { Upload, CheckCircle, AlertCircle, Loader, Wand2, Copy, Check, Download, FileText } from 'lucide-react'
 
-const API_URL = 'http://127.0.0.1:8000'
+const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000'
 
 export default function ResumeAnalyzer() {
     const [resumeText, setResumeText] = useState(localStorage.getItem('saved_resume') || '')

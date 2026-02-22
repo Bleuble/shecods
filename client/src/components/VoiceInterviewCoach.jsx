@@ -3,7 +3,7 @@ import axios from 'axios'
 import { Mic, MicOff, Volume2, VolumeX, Languages, Bot, User, Play, StopCircle, RefreshCw, Send, Sparkles, Heart, AlertTriangle, LogIn } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 
-const API_URL = 'http://127.0.0.1:8000'
+const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000'
 
 export default function VoiceInterviewCoach({ user, prefilledRole }) {
     const [role, setRole] = useState('')

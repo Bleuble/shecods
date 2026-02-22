@@ -2,6 +2,8 @@ import React, { useState } from 'react'
 import { motion } from 'framer-motion'
 import { Mail, Lock, User, ArrowRight, Github } from 'lucide-react'
 
+const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000'
+
 export default function Auth({ onLogin }) {
     const [isLogin, setIsLogin] = useState(true)
     const [isLoading, setIsLoading] = useState(false)
@@ -11,8 +13,7 @@ export default function Auth({ onLogin }) {
         e.preventDefault()
         setIsLoading(true)
         try {
-            const apiBase = 'http://127.0.0.1:8000'
-            const endpoint = isLogin ? `${apiBase}/login` : `${apiBase}/register`
+            const endpoint = isLogin ? `${API_URL}/login` : `${API_URL}/register`
 
             let response;
             if (isLogin) {
@@ -45,8 +46,7 @@ export default function Auth({ onLogin }) {
             const data = await response.json();
             localStorage.setItem('token', data.access_token);
 
-            // Fetch user profile
-            const userResponse = await fetch(`${apiBase}/me`, {
+            const userResponse = await fetch(`${API_URL}/me`, {
                 headers: { 'Authorization': `Bearer ${data.access_token}` }
             });
 
